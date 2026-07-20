@@ -126,6 +126,22 @@ def process_osv_data(osv_data):
     return counts, detailed_findings
 
 
+def format_cvss_score(score_str):
+    """Format and colorize CVSS scores for terminal output."""
+    try:
+        score = float(score_str)
+        if score >= 9.0:
+            # Bold Red
+            return f"\033[1;31m{score_str:<5}\033[0m"
+        elif score >= 8.0:
+            # Yellow / Orange
+            return f"\033[33m{score_str:<5}\033[0m"
+    except ValueError:
+        pass
+
+    return f"{score_str:<5}"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Scan Docker images for malicious software (OSM) and CVE vulnerabilities (OSV-Scanner)."
@@ -218,12 +234,13 @@ def main():
                     )
                     if filtered_findings:
                         print(
-                            f"{'SEVERITY':<10} {'CVE / ID':<22} {'PACKAGE':<20} {'VERSION':<15} {'CVSS'}"
+                            f"{'SEVERITY':<10} {'CVE / ID':<22} {'PACKAGE':<20} {'VERSION':<32} {'CVSS'}"
                         )
-                        print("-" * 75)
+                        print("-" * 90)
                         for item in filtered_findings:
+                            cvss_colored = format_cvss_score(item["score"])
                             print(
-                                f"{item['severity']:<10} {item['cve']:<22} {item['package']:<20} {item['version']:<15} {item['score']}"
+                                f"{item['severity']:<10} {item['cve']:<22} {item['package']:<20} {item['version']:<32} {cvss_colored}"
                             )
                     else:
                         print(f"No vulnerabilities found matching level: {filter_label}")
