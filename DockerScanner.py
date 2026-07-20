@@ -379,6 +379,11 @@ def main():
         action="store_true",
         help="Filter findings down to only Known Exploited Vulnerabilities (CISA KEV)",
     )
+    parser.add_argument(
+        "--epss-dec",
+        action="store_true",
+        help="Sort findings by EPSS score in descending order (highest probability first)",
+    )
 
     args = parser.parse_args()
 
@@ -468,6 +473,14 @@ def main():
                     unique_cves = list({item["cve"] for item in filtered_findings})
                     epss_map = get_epss_scores(unique_cves)
                     cwe_map = get_cwe_map(unique_cves)
+
+                    # Sort by EPSS descending if requested
+                    if args.epss_dec:
+                        filtered_findings.sort(
+                            key=lambda item: epss_map.get(item["cve"], 0.0),
+                            reverse=True
+                        )
+                        filter_label += " | Sorted by EPSS ⬇️"
 
                     # Render output via Rich
                     render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_label)
