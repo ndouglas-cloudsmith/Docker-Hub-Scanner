@@ -1,5 +1,7 @@
 # DockerHub Scanner
-Working on a unified Docker Hub scanner to check for known vulnerabilities but also intentionally malicious software dependencies
+Unified Docker Hub scanner to check for the below information:
+- Known Exploitable Vulnerabilities
+- Intentionally Malicious Software Dependencies
 
 ```
 wget https://raw.githubusercontent.com/ndouglas-cloudsmith/Docker-Hub-Scanner/refs/heads/main/DockerScanner.py
