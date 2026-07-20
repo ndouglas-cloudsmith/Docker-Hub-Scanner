@@ -6,6 +6,39 @@ import subprocess
 import sys
 import time
 import requests
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
+
+console = Console()
+
+# Local dictionary mapping CWE IDs to their Official Common Names & Short Descriptions
+CWE_INFO = {
+    "CWE-22": ("Path Traversal", "Improper Limitation of a Pathname to a Restricted Directory ('../')"),
+    "CWE-59": ("Symlink Following", "Improper Link Resolution Before File Access"),
+    "CWE-78": ("OS Command Injection", "Improper Neutralization of Special Elements used in an OS Command"),
+    "CWE-119": ("Buffer Overflow", "Improper Restriction of Operations within the Bounds of a Memory Buffer"),
+    "CWE-121": ("Stack Buffer Overflow", "Stack-based Buffer Overflow"),
+    "CWE-122": ("Heap Buffer Overflow", "Heap-based Buffer Overflow"),
+    "CWE-125": ("Out-of-bounds Read", "Read Operation Exceeds Buffer Boundary"),
+    "CWE-190": ("Integer Overflow", "Integer Overflow or Wraparound"),
+    "CWE-193": ("Off-by-one Error", "Off-by-one Error in Loop or Array Indexing"),
+    "CWE-200": ("Info Exposure", "Exposure of Sensitive Information to an Unauthorized Actor"),
+    "CWE-250": ("Unnecessary Privileges", "Execution with Unnecessary Privileges"),
+    "CWE-269": ("Privilege Management", "Improper Privilege Management"),
+    "CWE-416": ("Use After Free", "Referencing Memory After It Has Been Freed"),
+    "CWE-476": ("NULL Pointer Dereference", "NULL Pointer Dereference causing Crash/DoS"),
+    "CWE-600": ("Uncaught Exception", "Uncaught Exception in Application Execution"),
+    "CWE-693": ("Protection Mechanism Failure", "Failure to Enforce Isolation or Security Controls"),
+    "CWE-787": ("Out-of-bounds Write", "Write Operation Exceeds Buffer Boundary"),
+}
+
+
+def get_cwe_details(cwe_id):
+    """Retrieve Common Name and Short Description for a CWE ID."""
+    if cwe_id in CWE_INFO:
+        return CWE_INFO[cwe_id]
+    return "N/A", "No description available"
 
 
 def get_cisa_kev_set():
@@ -48,6 +81,51 @@ def get_epss_scores(cve_list):
         except Exception:
             pass
     return epss_map
+
+
+def get_cwe_map(cve_list):
+    """Query OSV/NVD endpoints to retrieve CWE IDs for filtered CVEs."""
+    valid_cves = [cve for cve in cve_list if cve.startswith("CVE-")]
+    if not valid_cves:
+        return {}
+
+    cwe_map = {}
+    for cve in valid_cves:
+        try:
+            resp = requests.get(f"https://api.osv.dev/v1/vulns/{cve}", timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                cwes = data.get("database_specific", {}).get("cwes", [])
+                if cwes:
+                    cwe_item = cwes[0]
+                    cwe_map[cve] = (
+                        cwe_item.get("cweId")
+                        if isinstance(cwe_item, dict)
+                        else str(cwe_item)
+                    )
+                    continue
+
+            nvd_resp = requests.get(
+                f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve}",
+                timeout=5,
+            )
+            if nvd_resp.status_code == 200:
+                nvd_data = nvd_resp.json()
+                vuln_items = nvd_data.get("vulnerabilities", [])
+                if vuln_items:
+                    weaknesses = vuln_items[0].get("cve", {}).get("weaknesses", [])
+                    for w in weaknesses:
+                        for desc in w.get("description", []):
+                            val = desc.get("value", "")
+                            if val.startswith("CWE-"):
+                                cwe_map[cve] = val
+                                break
+                        if cve in cwe_map:
+                            break
+        except Exception:
+            pass
+
+    return cwe_map
 
 
 def check_osm(container_name, api_key):
@@ -151,6 +229,7 @@ def process_osv_data(osv_data):
                         "cve": cve_id,
                         "package": pkg_name,
                         "version": pkg_version,
+                        "cwe": "N/A",
                         "score": score_str,
                     }
                 )
@@ -158,41 +237,66 @@ def process_osv_data(osv_data):
     return counts, detailed_findings
 
 
-def format_cvss_score(score_str):
-    """Format and colorize CVSS scores without breaking string width alignment."""
-    formatted = f"{score_str:<6}"
-    try:
-        score = float(score_str)
-        if score >= 9.0:
-            return f"\033[1;31m{formatted}\033[0m"  # Bold Red
-        elif score >= 8.0:
-            return f"\033[33m{formatted}\033[0m"  # Yellow / Orange
-    except ValueError:
-        pass
-    return formatted
+def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_label):
+    """Renders formatted Rich table to solve alignment/wrapping issues."""
+    table = Table(
+        title=f"--- Filtered Listing ({filter_label} Severity) [{len(filtered_findings)} item(s)] ---",
+        title_style="bold yellow",
+        show_lines=False,
+        header_style="bold cyan",
+        expand=True
+    )
 
+    # Adding explicit columns with wrap/fold controls
+    table.add_column("SEVERITY", style="bold red", width=10, no_wrap=True)
+    table.add_column("CVE / ID", width=22, no_wrap=True)
+    table.add_column("PACKAGE", max_width=28, overflow="fold")
+    table.add_column("CWE ID", width=10, no_wrap=True)
+    table.add_column("CWE NAME", max_width=22, overflow="ellipsis")
+    table.add_column("CVSS", justify="right", width=6)
+    table.add_column("EPSS", justify="right", width=8)
+    table.add_column("KEV", justify="center", width=6)
+    table.add_column("DESCRIPTION", max_width=40, overflow="ellipsis")
 
-def format_epss_score(epss_val):
-    """Format EPSS percentage without breaking string width alignment."""
-    if epss_val is None:
-        return f"{'N/A':<8}"
+    for item in filtered_findings:
+        cve = item["cve"]
+        cwe_id = cwe_map.get(cve, "N/A")
+        cwe_name, cwe_desc = get_cwe_details(cwe_id)
 
-    pct = epss_val * 100
-    formatted = f"{pct:.1f}%"
-    padded = f"{formatted:<8}"
+        # CVSS Styling
+        try:
+            score_num = float(item["score"])
+            cvss_style = "bold red" if score_num >= 9.0 else "yellow"
+            cvss_display = Text(f"{score_num:.1f}", style=cvss_style)
+        except ValueError:
+            cvss_display = Text(item["score"], style="dim")
 
-    if pct >= 50.0:
-        return f"\033[1;31m{padded}\033[0m"  # Bold Red
-    elif pct >= 10.0:
-        return f"\033[33m{padded}\033[0m"  # Yellow
-    return padded
+        # EPSS Styling
+        epss_val = epss_map.get(cve)
+        if epss_val is not None:
+            pct = epss_val * 100
+            epss_style = "bold red" if pct >= 50.0 else ("yellow" if pct >= 10.0 else "default")
+            epss_display = Text(f"{pct:.1f}%", style=epss_style)
+        else:
+            epss_display = Text("N/A", style="dim")
 
+        # KEV Styling
+        is_kev = cve in kev_set
+        kev_display = Text("YES 🚨", style="bold red") if is_kev else Text("NO", style="dim green")
 
-def format_kev_status(is_kev):
-    """Format CISA KEV status cleanly."""
-    if is_kev:
-        return "\033[1;31mYES 🚨\033[0m"  # Bold Red
-    return "\033[32mNO\033[0m"  # Muted Green
+        table.add_row(
+            item["severity"],
+            cve,
+            item["package"],
+            cwe_id,
+            cwe_name,
+            cvss_display,
+            epss_display,
+            kev_display,
+            cwe_desc
+        )
+
+    console.print(table)
 
 
 def main():
@@ -281,35 +385,15 @@ def main():
                     ]
                     filter_label = " & ".join(target_severities)
 
-                    print(
-                        f"\n--- Filtered Listing ({filter_label} Severity) [{len(filtered_findings)} item(s)] ---"
-                    )
                     if filtered_findings:
-                        print("Fetching CISA KEV and EPSS threat intelligence...")
+                        print(f"\nFetching CISA KEV, EPSS, and CWE threat intelligence...")
                         kev_set = get_cisa_kev_set()
                         unique_cves = list({item["cve"] for item in filtered_findings})
                         epss_map = get_epss_scores(unique_cves)
+                        cwe_map = get_cwe_map(unique_cves)
 
-                        # Expanded column widths: PACKAGE=35, VERSION=36
-                        print(
-                            f"\n{'SEVERITY':<10} {'CVE / ID':<22} {'PACKAGE':<35} {'VERSION':<36} {'CVSS':<6} {'EPSS':<8} {'CISA KEV'}"
-                        )
-                        print("-" * 130)
-                        for item in filtered_findings:
-                            cve = item["cve"]
-                            cvss_colored = format_cvss_score(item["score"])
-
-                            # EPSS lookup
-                            epss_val = epss_map.get(cve)
-                            epss_colored = format_epss_score(epss_val)
-
-                            # KEV lookup
-                            is_kev = cve in kev_set
-                            kev_str = format_kev_status(is_kev)
-
-                            print(
-                                f"{item['severity']:<10} {cve:<22} {item['package']:<35} {item['version']:<36} {cvss_colored} {epss_colored} {kev_str}"
-                            )
+                        # Render output via Rich
+                        render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_label)
                     else:
                         print(f"No vulnerabilities found matching level: {filter_label}")
             else:
