@@ -52,8 +52,11 @@ Sort High severity findings by **[EPSS](https://www.first.org/epss/) descending*
 ```
 python3 DockerScanner.py vulhub/activemq:5.16.5 --high --epss-dec
 ```
-Combine with ```CVSS``` scoring with ```EPSS``` predictability and ```KEV``` filtering:
+Combine ```EPSS``` scores in descending order and ```KEV``` filtering:
 ```
-python3 DockerScanner.py vulhub/activemq:5.16.5 --high --kev --epss-dec
+python3 DockerScanner.py vulhub/activemq:5.16.5 --high --kev --epss-desc
 ```
-
+Combine ```CVSS``` scores in descending order, where a **[CWE](https://cwe.mitre.org/data/pdfs.html)** *MUST* be present:
+```
+DockerScanner.py vulhub/activemq:5.16.5 --critical --cvss-desc --cwe-true
+```
