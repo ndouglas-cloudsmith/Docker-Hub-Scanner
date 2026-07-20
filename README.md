@@ -48,3 +48,12 @@ Filter for Known Exploited Vuklnerabilities (**[KEV](https://www.cisa.gov/sites/
 python3 DockerScanner.py vulhub/activemq:5.16.5 --high --kev 
 ```
 
+Sort High severity findings by **[EPSS](https://www.first.org/epss/) descending**:
+```
+python3 DockerScanner.py vulhub/activemq:5.16.5 --high --epss-dec
+```
+Combine with ```CVSS``` scoring with ```EPSS``` predictability and ```KEV``` filtering:
+```
+python3 DockerScanner.py vulhub/activemq:5.16.5 --high --kev --epss-dec
+```
+
