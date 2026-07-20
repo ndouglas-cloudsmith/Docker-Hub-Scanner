@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from rich.console import Console
 from rich.table import Table
@@ -13,28 +14,31 @@ from rich.text import Text
 
 console = Console()
 
+# Persistent session for HTTP Connection Reuse
+SESSION = requests.Session()
+
 # In-memory cache for API fetched CWE details: { "CWE-125": ("Name", "Description") }
 CWE_CACHE = {}
 
 
-def get_cwe_details(cwe_id):
-    """Fetch Name and Description for a CWE ID using official MITRE REST API & CIRCL fallbacks."""
+def fetch_single_cwe_detail(cwe_id):
+    """Fetch Name and Description for a single CWE ID using MITRE REST API & CIRCL fallbacks."""
     if not cwe_id or cwe_id == "N/A":
-        return "N/A", "No description available"
+        return cwe_id, ("N/A", "No description available")
 
     if cwe_id in CWE_CACHE:
-        return CWE_CACHE[cwe_id]
+        return cwe_id, CWE_CACHE[cwe_id]
 
     match = re.search(r"\d+", cwe_id)
     if not match:
-        return "N/A", "No description available"
+        return cwe_id, ("N/A", "No description available")
 
     cwe_num = match.group(0)
 
     # 1. Primary Attempt: Official MITRE CWE API
     try:
         mitre_url = f"https://cwe-api.mitre.org/api/v1/cwe/weakness/{cwe_num}"
-        resp = requests.get(mitre_url, timeout=5)
+        resp = SESSION.get(mitre_url, timeout=3)
         if resp.status_code == 200:
             data = resp.json()
             weaknesses = data.get("Weaknesses", [])
@@ -46,7 +50,7 @@ def get_cwe_details(cwe_id):
 
                 res = (name, desc)
                 CWE_CACHE[cwe_id] = res
-                return res
+                return cwe_id, res
     except Exception:
         pass
 
@@ -58,7 +62,7 @@ def get_cwe_details(cwe_id):
 
     for url in circl_urls:
         try:
-            resp = requests.get(url, timeout=5)
+            resp = SESSION.get(url, timeout=3)
             if resp.status_code == 200:
                 data = resp.json()
 
@@ -71,12 +75,7 @@ def get_cwe_details(cwe_id):
                 else:
                     continue
 
-                name = (
-                    item.get("Name")
-                    or item.get("name")
-                    or item.get("title")
-                    or "N/A"
-                )
+                name = item.get("Name") or item.get("name") or item.get("title") or "N/A"
                 desc = (
                     item.get("Description")
                     or item.get("description")
@@ -91,20 +90,88 @@ def get_cwe_details(cwe_id):
 
                 res = (name, desc)
                 CWE_CACHE[cwe_id] = res
-                return res
+                return cwe_id, res
         except Exception:
             pass
 
     fallback = ("N/A", "No description available")
     CWE_CACHE[cwe_id] = fallback
-    return fallback
+    return cwe_id, fallback
+
+
+def get_cwe_details_batch(cwe_ids):
+    """Batch fetch CWE details concurrently."""
+    unique_ids = [c for c in set(cwe_ids) if c and c != "N/A"]
+    if not unique_ids:
+        return
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(fetch_single_cwe_detail, cwe_id) for cwe_id in unique_ids]
+        for future in as_completed(futures):
+            try:
+                cwe_id, details = future.result()
+                CWE_CACHE[cwe_id] = details
+            except Exception:
+                pass
+
+
+def fetch_single_cwe_mapping(cve):
+    """Worker function to look up CWE ID for a single CVE."""
+    try:
+        resp = SESSION.get(f"https://api.osv.dev/v1/vulns/{cve}", timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            cwes = data.get("database_specific", {}).get("cwes", [])
+            if cwes:
+                cwe_item = cwes[0]
+                val = cwe_item.get("cweId") if isinstance(cwe_item, dict) else str(cwe_item)
+                return cve, val
+
+        nvd_resp = SESSION.get(
+            f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve}",
+            timeout=3,
+        )
+        if nvd_resp.status_code == 200:
+            nvd_data = nvd_resp.json()
+            vuln_items = nvd_data.get("vulnerabilities", [])
+            if vuln_items:
+                weaknesses = vuln_items[0].get("cve", {}).get("weaknesses", [])
+                for w in weaknesses:
+                    for desc in w.get("description", []):
+                        val = desc.get("value", "")
+                        if val.startswith("CWE-"):
+                            return cve, val
+    except Exception:
+        pass
+
+    return cve, "N/A"
+
+
+def get_cwe_map(cve_list):
+    """Query OSV/NVD endpoints concurrently using thread pooling."""
+    valid_cves = list({cve for cve in cve_list if cve.startswith("CVE-")})
+    if not valid_cves:
+        return {}
+
+    cwe_map = {}
+    # Fetch 20 requests in parallel
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = [executor.submit(fetch_single_cwe_mapping, cve) for cve in valid_cves]
+        for future in as_completed(futures):
+            try:
+                cve, cwe_id = future.result()
+                cwe_map[cve] = cwe_id
+            except Exception:
+                pass
+
+    return cwe_map
 
 
 def get_cisa_kev_set():
     """Download CISA KEV catalog and return a set of CVE IDs currently being exploited."""
     url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
     try:
-        resp = requests.get(url, timeout=10)
+        resp = SESSION.get(url, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
             return {
@@ -119,7 +186,7 @@ def get_cisa_kev_set():
 
 def get_epss_scores(cve_list):
     """Query FIRST.org API to get EPSS scores for a list of CVEs."""
-    valid_cves = [cve for cve in cve_list if cve.startswith("CVE-")]
+    valid_cves = list({cve for cve in cve_list if cve.startswith("CVE-")})
     if not valid_cves:
         return {}
 
@@ -129,7 +196,7 @@ def get_epss_scores(cve_list):
         chunk = valid_cves[i : i + chunk_size]
         url = f"https://api.first.org/data/v1/epss?cve={','.join(chunk)}"
         try:
-            resp = requests.get(url, timeout=10)
+            resp = SESSION.get(url, timeout=5)
             if resp.status_code == 200:
                 data = resp.json().get("data", [])
                 for entry in data:
@@ -142,51 +209,6 @@ def get_epss_scores(cve_list):
     return epss_map
 
 
-def get_cwe_map(cve_list):
-    """Query OSV/NVD endpoints to retrieve CWE IDs for filtered CVEs."""
-    valid_cves = [cve for cve in cve_list if cve.startswith("CVE-")]
-    if not valid_cves:
-        return {}
-
-    cwe_map = {}
-    for cve in valid_cves:
-        try:
-            resp = requests.get(f"https://api.osv.dev/v1/vulns/{cve}", timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                cwes = data.get("database_specific", {}).get("cwes", [])
-                if cwes:
-                    cwe_item = cwes[0]
-                    cwe_map[cve] = (
-                        cwe_item.get("cweId")
-                        if isinstance(cwe_item, dict)
-                        else str(cwe_item)
-                    )
-                    continue
-
-            nvd_resp = requests.get(
-                f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve}",
-                timeout=5,
-            )
-            if nvd_resp.status_code == 200:
-                nvd_data = nvd_resp.json()
-                vuln_items = nvd_data.get("vulnerabilities", [])
-                if vuln_items:
-                    weaknesses = vuln_items[0].get("cve", {}).get("weaknesses", [])
-                    for w in weaknesses:
-                        for desc in w.get("description", []):
-                            val = desc.get("value", "")
-                            if val.startswith("CWE-"):
-                                cwe_map[cve] = val
-                                break
-                        if cve in cwe_map:
-                            break
-        except Exception:
-            pass
-
-    return cwe_map
-
-
 def check_osm(container_name, api_key):
     """Query OSM API to check if the image is flagged as malicious."""
     url = "https://api.opensourcemalware.com/functions/v1/check-malicious"
@@ -197,7 +219,7 @@ def check_osm(container_name, api_key):
     headers = {"Authorization": f"Bearer {api_key}"}
 
     try:
-        response = requests.get(url, params=params, headers=headers, timeout=15)
+        response = SESSION.get(url, params=params, headers=headers, timeout=10)
         response.raise_for_status()
         return response.json()
     except Exception as err:
@@ -297,13 +319,13 @@ def process_osv_data(osv_data):
 
 
 def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_label):
-    """Renders formatted Rich table to solve alignment/wrapping issues."""
+    """Renders formatted Rich table."""
     table = Table(
         title=f"--- Filtered Listing ({filter_label}) [{len(filtered_findings)} item(s)] ---",
         title_style="bold yellow",
         show_lines=False,
         header_style="bold cyan",
-        expand=True
+        expand=True,
     )
 
     table.add_column("SEVERITY", style="bold red", width=10, no_wrap=True)
@@ -319,7 +341,7 @@ def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_labe
     for item in filtered_findings:
         cve = item["cve"]
         cwe_id = cwe_map.get(cve, "N/A")
-        cwe_name, cwe_desc = get_cwe_details(cwe_id)
+        cwe_name, cwe_desc = CWE_CACHE.get(cwe_id, ("N/A", "No description available"))
 
         # CVSS Styling
         try:
@@ -333,14 +355,18 @@ def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_labe
         epss_val = epss_map.get(cve)
         if epss_val is not None:
             pct = epss_val * 100
-            epss_style = "bold red" if pct >= 50.0 else ("yellow" if pct >= 10.0 else "default")
+            epss_style = (
+                "bold red" if pct >= 50.0 else ("yellow" if pct >= 10.0 else "default")
+            )
             epss_display = Text(f"{pct:.1f}%", style=epss_style)
         else:
             epss_display = Text("N/A", style="dim")
 
         # KEV Styling
         is_kev = cve in kev_set
-        kev_display = Text("YES 🚨", style="bold red") if is_kev else Text("NO", style="dim green")
+        kev_display = (
+            Text("YES 🚨", style="bold red") if is_kev else Text("NO", style="dim green")
+        )
 
         table.add_row(
             item["severity"],
@@ -351,7 +377,7 @@ def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_labe
             cvss_display,
             epss_display,
             kev_display,
-            cwe_desc
+            cwe_desc,
         )
 
     console.print(table)
@@ -385,17 +411,16 @@ def main():
         help="Filter findings down to only vulnerabilities that returned a valid CWE ID",
     )
 
-    # Mutually exclusive group so --epss-desc and --cvss-desc cannot be used simultaneously
     sort_group = parser.add_mutually_exclusive_group()
     sort_group.add_argument(
         "--epss-desc",
         action="store_true",
-        help="Sort findings by EPSS score in descending order (highest probability first)",
+        help="Sort findings by EPSS score in descending order",
     )
     sort_group.add_argument(
         "--cvss-desc",
         action="store_true",
-        help="Sort findings by CVSS score in descending order (highest severity first)",
+        help="Sort findings by CVSS score in descending order",
     )
 
     args = parser.parse_args()
@@ -460,7 +485,6 @@ def main():
                 if args.high:
                     target_severities.append("HIGH")
 
-                # Default to all findings if no specific severity flag is set
                 if target_severities:
                     filtered_findings = [
                         f for f in findings if f["severity"] in target_severities
@@ -470,41 +494,40 @@ def main():
                     filtered_findings = findings
                     filter_label = "All Severities"
 
-                # Pre-fetch KEV catalog
                 print(f"\nFetching CISA KEV threat intelligence...")
                 kev_set = get_cisa_kev_set()
 
-                # Filter by KEV if requested
                 if args.kev:
-                    filtered_findings = [
-                        f for f in filtered_findings if f["cve"] in kev_set
-                    ]
+                    filtered_findings = [f for f in filtered_findings if f["cve"] in kev_set]
                     filter_label += " | KEV Only 🚨"
 
                 if filtered_findings:
-                    print(f"Fetching EPSS and CWE threat intelligence...")
+                    print(f"Fetching EPSS and CWE threat intelligence (Parallel)...")
                     unique_cves = list({item["cve"] for item in filtered_findings})
                     epss_map = get_epss_scores(unique_cves)
                     cwe_map = get_cwe_map(unique_cves)
 
-                    # Filter by valid CWE ID if requested
+                    # Batch pre-fetch CWE descriptions concurrently
+                    unique_cwes = list(set(cwe_map.values()))
+                    get_cwe_details_batch(unique_cwes)
+
                     if args.cwe_true:
                         filtered_findings = [
-                            f for f in filtered_findings 
+                            f
+                            for f in filtered_findings
                             if cwe_map.get(f["cve"]) and cwe_map.get(f["cve"]) != "N/A"
                         ]
                         filter_label += " | CWE True Only 🏷️"
 
-                    # Sort by EPSS descending if requested
                     if args.epss_desc:
                         filtered_findings.sort(
                             key=lambda item: epss_map.get(item["cve"], 0.0),
-                            reverse=True
+                            reverse=True,
                         )
                         filter_label += " | Sorted by EPSS ⬇️"
 
-                    # Sort by CVSS descending if requested
                     elif args.cvss_desc:
+
                         def parse_score(item):
                             try:
                                 return float(item["score"])
@@ -515,8 +538,9 @@ def main():
                         filter_label += " | Sorted by CVSS ⬇️"
 
                     if filtered_findings:
-                        # Render output via Rich
-                        render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_label)
+                        render_rich_table(
+                            filtered_findings, cwe_map, epss_map, kev_set, filter_label
+                        )
                     else:
                         print(f"No vulnerabilities found matching: {filter_label}")
                 else:
