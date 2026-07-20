@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -12,33 +13,61 @@ from rich.text import Text
 
 console = Console()
 
-# Local dictionary mapping CWE IDs to their Official Common Names & Short Descriptions
-CWE_INFO = {
-    "CWE-22": ("Path Traversal", "Improper Limitation of a Pathname to a Restricted Directory ('../')"),
-    "CWE-59": ("Symlink Following", "Improper Link Resolution Before File Access"),
-    "CWE-78": ("OS Command Injection", "Improper Neutralization of Special Elements used in an OS Command"),
-    "CWE-119": ("Buffer Overflow", "Improper Restriction of Operations within the Bounds of a Memory Buffer"),
-    "CWE-121": ("Stack Buffer Overflow", "Stack-based Buffer Overflow"),
-    "CWE-122": ("Heap Buffer Overflow", "Heap-based Buffer Overflow"),
-    "CWE-125": ("Out-of-bounds Read", "Read Operation Exceeds Buffer Boundary"),
-    "CWE-190": ("Integer Overflow", "Integer Overflow or Wraparound"),
-    "CWE-193": ("Off-by-one Error", "Off-by-one Error in Loop or Array Indexing"),
-    "CWE-200": ("Info Exposure", "Exposure of Sensitive Information to an Unauthorized Actor"),
-    "CWE-250": ("Unnecessary Privileges", "Execution with Unnecessary Privileges"),
-    "CWE-269": ("Privilege Management", "Improper Privilege Management"),
-    "CWE-416": ("Use After Free", "Referencing Memory After It Has Been Freed"),
-    "CWE-476": ("NULL Pointer Dereference", "NULL Pointer Dereference causing Crash/DoS"),
-    "CWE-600": ("Uncaught Exception", "Uncaught Exception in Application Execution"),
-    "CWE-693": ("Protection Mechanism Failure", "Failure to Enforce Isolation or Security Controls"),
-    "CWE-787": ("Out-of-bounds Write", "Write Operation Exceeds Buffer Boundary"),
-}
+# In-memory cache for API fetched CWE details: { "CWE-125": ("Name", "Description") }
+CWE_CACHE = {}
 
 
 def get_cwe_details(cwe_id):
-    """Retrieve Common Name and Short Description for a CWE ID."""
-    if cwe_id in CWE_INFO:
-        return CWE_INFO[cwe_id]
-    return "N/A", "No description available"
+    """Fetch Common Name and Short Description for a CWE ID from CIRCL API with caching."""
+    if not cwe_id or cwe_id == "N/A":
+        return "N/A", "No description available"
+
+    if cwe_id in CWE_CACHE:
+        return CWE_CACHE[cwe_id]
+
+    match = re.search(r"\d+", cwe_id)
+    if not match:
+        return "N/A", "No description available"
+
+    cwe_num = match.group(0)
+
+    # Try CIRCL CWE endpoints
+    urls = [
+        f"https://cvepremium.circl.lu/api/cwe/{cwe_num}",
+        f"https://cve.circl.lu/api/cwe/{cwe_num}",
+    ]
+
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, dict):
+                    name = (
+                        data.get("name")
+                        or data.get("title")
+                        or data.get("id")
+                        or "N/A"
+                    )
+                    desc = (
+                        data.get("description")
+                        or data.get("summary")
+                        or data.get("abstract")
+                        or "No description available"
+                    )
+
+                    if isinstance(desc, list):
+                        desc = " ".join(desc)
+                    desc = str(desc).strip().replace("\n", " ")
+
+                    CWE_CACHE[cwe_id] = (name, desc)
+                    return name, desc
+        except Exception:
+            pass
+
+    fallback = ("N/A", "No description available")
+    CWE_CACHE[cwe_id] = fallback
+    return fallback
 
 
 def get_cisa_kev_set():
@@ -247,7 +276,7 @@ def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_labe
         expand=True
     )
 
-    # Adding explicit columns with wrap/fold controls
+    # Clean layout with original CWE ID width
     table.add_column("SEVERITY", style="bold red", width=10, no_wrap=True)
     table.add_column("CVE / ID", width=22, no_wrap=True)
     table.add_column("PACKAGE", max_width=28, overflow="fold")
