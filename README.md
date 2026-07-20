@@ -16,7 +16,7 @@ python3 DockerScanner.py
 
 You can run it directly with positional arguments or fall back to interactive prompt if omitted:
 
-Scab for a specific docker container called ```metal3d/xmrig```
+Scan for a specific docker container called ```metal3d/xmrig```
 ```
 python3 DockerScanner.py metal3d/xmrig
 ```
