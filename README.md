@@ -43,3 +43,8 @@ Find ```HIGH``` and ```CRITICAL``` CVEs for the same container image:
 ```
 python3 DockerScanner.py metal3d/xmrig --critical --high
 ```
+Filter for Known Exploited Vuklnerabilities (**[KEV](https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json)**) using the ```--kev``` flag:
+```
+python3 DockerScanner.py vulhub/activemq:5.16.5 --high --kev 
+```
+
