@@ -8,6 +8,48 @@ import time
 import requests
 
 
+def get_cisa_kev_set():
+    """Download CISA KEV catalog and return a set of CVE IDs currently being exploited."""
+    url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            return {
+                item["cveID"]
+                for item in data.get("vulnerabilities", [])
+                if "cveID" in item
+            }
+    except Exception:
+        pass
+    return set()
+
+
+def get_epss_scores(cve_list):
+    """Query FIRST.org API to get EPSS scores for a list of CVEs."""
+    valid_cves = [cve for cve in cve_list if cve.startswith("CVE-")]
+    if not valid_cves:
+        return {}
+
+    epss_map = {}
+    chunk_size = 50
+    for i in range(0, len(valid_cves), chunk_size):
+        chunk = valid_cves[i : i + chunk_size]
+        url = f"https://api.first.org/data/v1/epss?cve={','.join(chunk)}"
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json().get("data", [])
+                for entry in data:
+                    cve_id = entry.get("cve")
+                    epss_val = entry.get("epss")
+                    if cve_id and epss_val:
+                        epss_map[cve_id] = float(epss_val)
+        except Exception:
+            pass
+    return epss_map
+
+
 def check_osm(container_name, api_key):
     """Query OSM API to check if the image is flagged as malicious."""
     url = "https://api.opensourcemalware.com/functions/v1/check-malicious"
@@ -21,16 +63,6 @@ def check_osm(container_name, api_key):
         response = requests.get(url, params=params, headers=headers, timeout=15)
         response.raise_for_status()
         return response.json()
-    except requests.exceptions.HTTPError as http_err:
-        try:
-            err_json = response.json()
-            print(
-                f"[OSM] API Error ({response.status_code}): {err_json.get('error', response.text)}",
-                file=sys.stderr,
-            )
-        except Exception:
-            print(f"[OSM] HTTP error: {http_err}", file=sys.stderr)
-        return None
     except Exception as err:
         print(f"[OSM] Failed to check malware status: {err}", file=sys.stderr)
         return None
@@ -71,7 +103,7 @@ def run_osv_scanner(container_name):
 
 
 def process_osv_data(osv_data):
-    """Parse OSV JSON output, aggregate counts by severity, and build a list of detailed findings."""
+    """Parse OSV JSON output, aggregate counts by severity, and build detailed findings."""
     counts = {
         "CRITICAL": 0,
         "HIGH": 0,
@@ -127,19 +159,40 @@ def process_osv_data(osv_data):
 
 
 def format_cvss_score(score_str):
-    """Format and colorize CVSS scores for terminal output."""
+    """Format and colorize CVSS scores without breaking string width alignment."""
+    formatted = f"{score_str:<6}"
     try:
         score = float(score_str)
         if score >= 9.0:
-            # Bold Red
-            return f"\033[1;31m{score_str:<5}\033[0m"
+            return f"\033[1;31m{formatted}\033[0m"  # Bold Red
         elif score >= 8.0:
-            # Yellow / Orange
-            return f"\033[33m{score_str:<5}\033[0m"
+            return f"\033[33m{formatted}\033[0m"  # Yellow / Orange
     except ValueError:
         pass
+    return formatted
 
-    return f"{score_str:<5}"
+
+def format_epss_score(epss_val):
+    """Format EPSS percentage without breaking string width alignment."""
+    if epss_val is None:
+        return f"{'N/A':<8}"
+
+    pct = epss_val * 100
+    formatted = f"{pct:.1f}%"
+    padded = f"{formatted:<8}"
+
+    if pct >= 50.0:
+        return f"\033[1;31m{padded}\033[0m"  # Bold Red
+    elif pct >= 10.0:
+        return f"\033[33m{padded}\033[0m"  # Yellow
+    return padded
+
+
+def format_kev_status(is_kev):
+    """Format CISA KEV status cleanly."""
+    if is_kev:
+        return "\033[1;31mYES 🚨\033[0m"  # Bold Red
+    return "\033[32mNO\033[0m"  # Muted Green
 
 
 def main():
@@ -216,7 +269,6 @@ def main():
                 if counts["UNKNOWN"] > 0:
                     print(f"  ⚪ Unknown  : {counts['UNKNOWN']}")
 
-                # Filter findings if --critical or --high flags are specified
                 target_severities = []
                 if args.critical:
                     target_severities.append("CRITICAL")
@@ -233,14 +285,30 @@ def main():
                         f"\n--- Filtered Listing ({filter_label} Severity) [{len(filtered_findings)} item(s)] ---"
                     )
                     if filtered_findings:
+                        print("Fetching CISA KEV and EPSS threat intelligence...")
+                        kev_set = get_cisa_kev_set()
+                        unique_cves = list({item["cve"] for item in filtered_findings})
+                        epss_map = get_epss_scores(unique_cves)
+
+                        # Expanded column widths: PACKAGE=35, VERSION=36
                         print(
-                            f"{'SEVERITY':<10} {'CVE / ID':<22} {'PACKAGE':<20} {'VERSION':<32} {'CVSS'}"
+                            f"\n{'SEVERITY':<10} {'CVE / ID':<22} {'PACKAGE':<35} {'VERSION':<36} {'CVSS':<6} {'EPSS':<8} {'CISA KEV'}"
                         )
-                        print("-" * 90)
+                        print("-" * 130)
                         for item in filtered_findings:
+                            cve = item["cve"]
                             cvss_colored = format_cvss_score(item["score"])
+
+                            # EPSS lookup
+                            epss_val = epss_map.get(cve)
+                            epss_colored = format_epss_score(epss_val)
+
+                            # KEV lookup
+                            is_kev = cve in kev_set
+                            kev_str = format_kev_status(is_kev)
+
                             print(
-                                f"{item['severity']:<10} {item['cve']:<22} {item['package']:<20} {item['version']:<32} {cvss_colored}"
+                                f"{item['severity']:<10} {cve:<22} {item['package']:<35} {item['version']:<36} {cvss_colored} {epss_colored} {kev_str}"
                             )
                     else:
                         print(f"No vulnerabilities found matching level: {filter_label}")
