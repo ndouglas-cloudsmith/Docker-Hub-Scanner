@@ -380,9 +380,22 @@ def main():
         help="Filter findings down to only Known Exploited Vulnerabilities (CISA KEV)",
     )
     parser.add_argument(
-        "--epss-dec",
+        "--cwe-true",
+        action="store_true",
+        help="Filter findings down to only vulnerabilities that returned a valid CWE ID",
+    )
+
+    # Mutually exclusive group so --epss-desc and --cvss-desc cannot be used simultaneously
+    sort_group = parser.add_mutually_exclusive_group()
+    sort_group.add_argument(
+        "--epss-desc",
         action="store_true",
         help="Sort findings by EPSS score in descending order (highest probability first)",
+    )
+    sort_group.add_argument(
+        "--cvss-desc",
+        action="store_true",
+        help="Sort findings by CVSS score in descending order (highest severity first)",
     )
 
     args = parser.parse_args()
@@ -474,16 +487,38 @@ def main():
                     epss_map = get_epss_scores(unique_cves)
                     cwe_map = get_cwe_map(unique_cves)
 
+                    # Filter by valid CWE ID if requested
+                    if args.cwe_true:
+                        filtered_findings = [
+                            f for f in filtered_findings 
+                            if cwe_map.get(f["cve"]) and cwe_map.get(f["cve"]) != "N/A"
+                        ]
+                        filter_label += " | CWE True Only 🏷️"
+
                     # Sort by EPSS descending if requested
-                    if args.epss_dec:
+                    if args.epss_desc:
                         filtered_findings.sort(
                             key=lambda item: epss_map.get(item["cve"], 0.0),
                             reverse=True
                         )
                         filter_label += " | Sorted by EPSS ⬇️"
 
-                    # Render output via Rich
-                    render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_label)
+                    # Sort by CVSS descending if requested
+                    elif args.cvss_desc:
+                        def parse_score(item):
+                            try:
+                                return float(item["score"])
+                            except ValueError:
+                                return 0.0
+
+                        filtered_findings.sort(key=parse_score, reverse=True)
+                        filter_label += " | Sorted by CVSS ⬇️"
+
+                    if filtered_findings:
+                        # Render output via Rich
+                        render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_label)
+                    else:
+                        print(f"No vulnerabilities found matching: {filter_label}")
                 else:
                     print(f"No vulnerabilities found matching: {filter_label}")
             else:
