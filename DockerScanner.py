@@ -18,7 +18,7 @@ CWE_CACHE = {}
 
 
 def get_cwe_details(cwe_id):
-    """Fetch Common Name and Short Description for a CWE ID from CIRCL API with caching."""
+    """Fetch Name and Description for a CWE ID using official MITRE REST API & CIRCL fallbacks."""
     if not cwe_id or cwe_id == "N/A":
         return "N/A", "No description available"
 
@@ -31,37 +31,67 @@ def get_cwe_details(cwe_id):
 
     cwe_num = match.group(0)
 
-    # Try CIRCL CWE endpoints
-    urls = [
+    # 1. Primary Attempt: Official MITRE CWE API
+    try:
+        mitre_url = f"https://cwe-api.mitre.org/api/v1/cwe/weakness/{cwe_num}"
+        resp = requests.get(mitre_url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            weaknesses = data.get("Weaknesses", [])
+            if weaknesses:
+                item = weaknesses[0]
+                name = item.get("Name", "N/A")
+                desc = item.get("Description", "No description available")
+                desc = str(desc).strip().replace("\n", " ")
+
+                res = (name, desc)
+                CWE_CACHE[cwe_id] = res
+                return res
+    except Exception:
+        pass
+
+    # 2. Secondary Fallback Attempt: CIRCL API
+    circl_urls = [
         f"https://cvepremium.circl.lu/api/cwe/{cwe_num}",
-        f"https://cve.circl.lu/api/cwe/{cwe_num}",
+        f"https://vulnerability.circl.lu/api/cwe/{cwe_num}",
     ]
 
-    for url in urls:
+    for url in circl_urls:
         try:
             resp = requests.get(url, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
-                if isinstance(data, dict):
-                    name = (
-                        data.get("name")
-                        or data.get("title")
-                        or data.get("id")
-                        or "N/A"
-                    )
-                    desc = (
-                        data.get("description")
-                        or data.get("summary")
-                        or data.get("abstract")
-                        or "No description available"
-                    )
 
-                    if isinstance(desc, list):
-                        desc = " ".join(desc)
-                    desc = str(desc).strip().replace("\n", " ")
+                if isinstance(data, dict) and "data" in data and isinstance(data["data"], list) and data["data"]:
+                    item = data["data"][0]
+                elif isinstance(data, list) and data:
+                    item = data[0]
+                elif isinstance(data, dict):
+                    item = data
+                else:
+                    continue
 
-                    CWE_CACHE[cwe_id] = (name, desc)
-                    return name, desc
+                name = (
+                    item.get("Name")
+                    or item.get("name")
+                    or item.get("title")
+                    or "N/A"
+                )
+                desc = (
+                    item.get("Description")
+                    or item.get("description")
+                    or item.get("summary")
+                    or item.get("abstract")
+                    or "No description available"
+                )
+
+                if isinstance(desc, list):
+                    desc = " ".join(desc)
+                desc = str(desc).strip().replace("\n", " ")
+
+                res = (name, desc)
+                CWE_CACHE[cwe_id] = res
+                return res
         except Exception:
             pass
 
@@ -269,14 +299,13 @@ def process_osv_data(osv_data):
 def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_label):
     """Renders formatted Rich table to solve alignment/wrapping issues."""
     table = Table(
-        title=f"--- Filtered Listing ({filter_label} Severity) [{len(filtered_findings)} item(s)] ---",
+        title=f"--- Filtered Listing ({filter_label}) [{len(filtered_findings)} item(s)] ---",
         title_style="bold yellow",
         show_lines=False,
         header_style="bold cyan",
         expand=True
     )
 
-    # Clean layout with original CWE ID width
     table.add_column("SEVERITY", style="bold red", width=10, no_wrap=True)
     table.add_column("CVE / ID", width=22, no_wrap=True)
     table.add_column("PACKAGE", max_width=28, overflow="fold")
@@ -345,6 +374,11 @@ def main():
     parser.add_argument(
         "--high", action="store_true", help="List specific High severity CVE findings"
     )
+    parser.add_argument(
+        "--kev",
+        action="store_true",
+        help="Filter findings down to only Known Exploited Vulnerabilities (CISA KEV)",
+    )
 
     args = parser.parse_args()
 
@@ -408,23 +442,37 @@ def main():
                 if args.high:
                     target_severities.append("HIGH")
 
+                # Default to all findings if no specific severity flag is set
                 if target_severities:
                     filtered_findings = [
                         f for f in findings if f["severity"] in target_severities
                     ]
-                    filter_label = " & ".join(target_severities)
+                    filter_label = " & ".join(target_severities) + " Severity"
+                else:
+                    filtered_findings = findings
+                    filter_label = "All Severities"
 
-                    if filtered_findings:
-                        print(f"\nFetching CISA KEV, EPSS, and CWE threat intelligence...")
-                        kev_set = get_cisa_kev_set()
-                        unique_cves = list({item["cve"] for item in filtered_findings})
-                        epss_map = get_epss_scores(unique_cves)
-                        cwe_map = get_cwe_map(unique_cves)
+                # Pre-fetch KEV catalog
+                print(f"\nFetching CISA KEV threat intelligence...")
+                kev_set = get_cisa_kev_set()
 
-                        # Render output via Rich
-                        render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_label)
-                    else:
-                        print(f"No vulnerabilities found matching level: {filter_label}")
+                # Filter by KEV if requested
+                if args.kev:
+                    filtered_findings = [
+                        f for f in filtered_findings if f["cve"] in kev_set
+                    ]
+                    filter_label += " | KEV Only 🚨"
+
+                if filtered_findings:
+                    print(f"Fetching EPSS and CWE threat intelligence...")
+                    unique_cves = list({item["cve"] for item in filtered_findings})
+                    epss_map = get_epss_scores(unique_cves)
+                    cwe_map = get_cwe_map(unique_cves)
+
+                    # Render output via Rich
+                    render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_label)
+                else:
+                    print(f"No vulnerabilities found matching: {filter_label}")
             else:
                 print("Result: No known vulnerabilities found by OSV-Scanner.")
 
