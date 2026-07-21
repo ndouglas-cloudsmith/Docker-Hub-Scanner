@@ -8,21 +8,82 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
 console = Console()
 
-# Persistent session for HTTP Connection Reuse
+# Persistent session configured for thread-safety and connection reuse
 SESSION = requests.Session()
+adapter = HTTPAdapter(
+    pool_connections=30,
+    pool_maxsize=30,
+    max_retries=Retry(total=2, backoff_factor=0.3, status_forcelist=[429, 500, 502, 503, 504]),
+)
+SESSION.mount("https://", adapter)
+SESSION.mount("http://", adapter)
 
-# In-memory cache for API fetched CWE details: { "CWE-125": ("Name", "Description") }
-CWE_CACHE = {}
+# Local offline database for common CWEs (Guarantees instant lookup & zero rate-limiting failures)
+BUILTIN_CWE_DB = {
+    "CWE-20": ("Improper Input Validation", "The product receives input or data but does not validate or incorrectly validates that the input has the properties required to process the data safely."),
+    "CWE-22": ("Path Traversal", "The product uses external input to construct a pathname that resolves outside of the restricted directory."),
+    "CWE-59": ("Link Following", "The product attempts to access a file based on filename without preventing shortcuts/links resolving to unintended resources."),
+    "CWE-75": ("Failure to Sanitize Special Elements", "The product fails to properly sanitize special elements before passing data to downstream components."),
+    "CWE-90": ("LDAP Injection", "The product constructs an LDAP statement using externally-influenced input without proper neutralization."),
+    "CWE-94": ("Code Injection", "The product constructs all or part of a code segment using externally-influenced input."),
+    "CWE-95": ("Eval Injection", "The product receives input from an upstream component but does not neutralize syntax before dynamic evaluation."),
+    "CWE-119": ("Improper Restriction of Memory Buffer Operations", "The product performs operations on a memory buffer but reads from or writes to an unintended memory location."),
+    "CWE-120": ("Buffer Copy Without Checking Size", "The product copies a buffer without checking that the destination buffer is large enough."),
+    "CWE-121": ("Stack-based Buffer Overflow", "A stack-based buffer overflow condition exists where memory allocated on the stack is overwritten."),
+    "CWE-122": ("Heap-based Buffer Overflow", "A heap overflow condition exists where memory allocated on the heap is overwritten."),
+    "CWE-125": ("Out-of-bounds Read", "The product reads data past the end or before the beginning of the intended buffer."),
+    "CWE-178": ("Improper Handling of Case Sensitivity", "The product does not properly account for differences in case sensitivity when accessing resources."),
+    "CWE-184": ("Incomplete List of Disallowed Inputs", "The protection mechanism relies on a list of disallowed inputs that is incomplete."),
+    "CWE-190": ("Integer Overflow or Wraparound", "The product performs a calculation that can produce an integer overflow or wraparound."),
+    "CWE-191": ("Integer Underflow", "An integer value is subtracted to a value below its minimum representable integer."),
+    "CWE-193": ("Off-by-one Error", "The product calculates or uses an incorrect maximum or minimum value that is off by one."),
+    "CWE-200": ("Exposure of Sensitive Information", "The product exposes sensitive information to an actor that is not explicitly authorized."),
+    "CWE-203": ("Observable Discrepancy", "The product behaves differently in a way that reveals sensitive information to unauthorized actors."),
+    "CWE-244": ("Heap Inspection", "Sensitive information stored in heap memory is not properly cleared before release."),
+    "CWE-294": ("Authentication Bypass by Capture-replay", "The product does not prevent capture-replay attacks during authentication."),
+    "CWE-295": ("Improper Certificate Validation", "The product does not validate or incorrectly validates a security certificate."),
+    "CWE-319": ("Cleartext Transmission of Sensitive Information", "Sensitive data is transmitted in cleartext over an unencrypted communication channel."),
+    "CWE-345": ("Insufficient Verification of Data Authenticity", "The product does not sufficiently verify the origin or authenticity of data."),
+    "CWE-347": ("Improper Verification of Cryptographic Signature", "The product does not verify or incorrectly verifies a cryptographic signature."),
+    "CWE-367": ("TOCTOU Race Condition", "The product checks resource state before use, but the state changes between check and use."),
+    "CWE-400": ("Uncontrolled Resource Consumption", "The product does not properly control the allocation and maintenance of limited resources."),
+    "CWE-415": ("Double Free", "The product calls free() twice on the same memory address."),
+    "CWE-416": ("Use After Free", "The product reuses or references memory after it has been freed."),
+    "CWE-426": ("Untrusted Search Path", "The product uses an untrusted search path that may contain malicious code."),
+    "CWE-436": ("Interpretation Conflict", "Product A handles inputs differently than Product B, leading to security inconsistencies."),
+    "CWE-444": ("HTTP Request Smuggling", "Inconsistent HTTP parsing allows attackers to smuggle requests past proxies."),
+    "CWE-476": ("NULL Pointer Dereference", "The product dereferences a pointer that expected to be valid but is NULL."),
+    "CWE-502": ("Deserialization of Untrusted Data", "The product deserializes untrusted data without sufficiently ensuring resulting data validity."),
+    "CWE-522": ("Insufficiently Protected Credentials", "The product transmits or stores credentials without adequate protection."),
+    "CWE-601": ("URL Redirection ('Open Redirect')", "The web application accepts user-controlled input to redirect to an external site."),
+    "CWE-617": ("Reachable Assertion", "An assert() statement can be triggered by an attacker to crash the application."),
+    "CWE-664": ("Improper Control of Resource Lifetime", "The product incorrectly maintains control over a resource throughout its lifecycle."),
+    "CWE-674": ("Uncontrolled Recursion", "The product does not properly control recursion depth, leading to stack exhaustion."),
+    "CWE-675": ("Multiple Operations on Resource", "The product performs multiple operations on a resource in an improper context."),
+    "CWE-680": ("Integer Overflow to Buffer Overflow", "An integer overflow occurs during memory allocation calculations."),
+    "CWE-755": ("Improper Handling of Exceptional Conditions", "The product incorrectly handles or fails to handle an exceptional condition."),
+    "CWE-770": ("Allocation of Resources Without Limits", "The product allocates resources on behalf of an actor without imposing quotas or limits."),
+    "CWE-787": ("Out-of-bounds Write", "The product writes data past the end or before the beginning of the intended buffer."),
+    "CWE-789": ("Uncontrolled Memory Allocation", "Memory allocation size is derived from an untrusted source without upper bounds."),
+    "CWE-835": ("Infinite Loop", "The product contains an iteration loop with an unreachable exit condition."),
+    "CWE-908": ("Use of Uninitialized Resource", "The product accesses a resource that has not been initialized."),
+    "CWE-918": ("Server-Side Request Forgery (SSRF)", "The web application fetches a remote resource without validating the supplied URL."),
+}
+
+# In-memory cache for fetched CWE details
+CWE_CACHE = dict(BUILTIN_CWE_DB)
 
 
 def fetch_single_cwe_detail(cwe_id):
-    """Fetch Name and Description for a single CWE ID using MITRE REST API & CIRCL fallbacks."""
+    """Fetch Name and Description for a CWE ID with local database fallback and API queries."""
     if not cwe_id or cwe_id == "N/A":
         return cwe_id, ("N/A", "No description available")
 
@@ -35,7 +96,7 @@ def fetch_single_cwe_detail(cwe_id):
 
     cwe_num = match.group(0)
 
-    # 1. Primary Attempt: Official MITRE CWE API
+    # MITRE REST API
     try:
         mitre_url = f"https://cwe-api.mitre.org/api/v1/cwe/weakness/{cwe_num}"
         resp = SESSION.get(mitre_url, timeout=3)
@@ -49,59 +110,17 @@ def fetch_single_cwe_detail(cwe_id):
                 desc = str(desc).strip().replace("\n", " ")
 
                 res = (name, desc)
-                CWE_CACHE[cwe_id] = res
                 return cwe_id, res
     except Exception:
         pass
 
-    # 2. Secondary Fallback Attempt: CIRCL API
-    circl_urls = [
-        f"https://cvepremium.circl.lu/api/cwe/{cwe_num}",
-        f"https://vulnerability.circl.lu/api/cwe/{cwe_num}",
-    ]
-
-    for url in circl_urls:
-        try:
-            resp = SESSION.get(url, timeout=3)
-            if resp.status_code == 200:
-                data = resp.json()
-
-                if isinstance(data, dict) and "data" in data and isinstance(data["data"], list) and data["data"]:
-                    item = data["data"][0]
-                elif isinstance(data, list) and data:
-                    item = data[0]
-                elif isinstance(data, dict):
-                    item = data
-                else:
-                    continue
-
-                name = item.get("Name") or item.get("name") or item.get("title") or "N/A"
-                desc = (
-                    item.get("Description")
-                    or item.get("description")
-                    or item.get("summary")
-                    or item.get("abstract")
-                    or "No description available"
-                )
-
-                if isinstance(desc, list):
-                    desc = " ".join(desc)
-                desc = str(desc).strip().replace("\n", " ")
-
-                res = (name, desc)
-                CWE_CACHE[cwe_id] = res
-                return cwe_id, res
-        except Exception:
-            pass
-
     fallback = ("N/A", "No description available")
-    CWE_CACHE[cwe_id] = fallback
     return cwe_id, fallback
 
 
 def get_cwe_details_batch(cwe_ids):
-    """Batch fetch CWE details concurrently."""
-    unique_ids = [c for c in set(cwe_ids) if c and c != "N/A"]
+    """Batch fetch CWE details concurrently and populate CWE_CACHE safely."""
+    unique_ids = [c for c in set(cwe_ids) if c and c != "N/A" and c not in CWE_CACHE]
     if not unique_ids:
         return
 
@@ -116,8 +135,9 @@ def get_cwe_details_batch(cwe_ids):
 
 
 def fetch_single_cwe_mapping(cve):
-    """Worker function to look up CWE ID for a single CVE."""
+    """Worker function to look up CWE ID for a single CVE using OSV and NVD APIs."""
     try:
+        # OSV API check
         resp = SESSION.get(f"https://api.osv.dev/v1/vulns/{cve}", timeout=3)
         if resp.status_code == 200:
             data = resp.json()
@@ -125,8 +145,10 @@ def fetch_single_cwe_mapping(cve):
             if cwes:
                 cwe_item = cwes[0]
                 val = cwe_item.get("cweId") if isinstance(cwe_item, dict) else str(cwe_item)
-                return cve, val
+                if val.startswith("CWE-"):
+                    return cve, val
 
+        # NVD API fallback
         nvd_resp = SESSION.get(
             f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve}",
             timeout=3,
@@ -154,8 +176,7 @@ def get_cwe_map(cve_list):
         return {}
 
     cwe_map = {}
-    # Fetch 20 requests in parallel
-    with ThreadPoolExecutor(max_workers=20) as executor:
+    with ThreadPoolExecutor(max_workers=15) as executor:
         futures = [executor.submit(fetch_single_cwe_mapping, cve) for cve in valid_cves]
         for future in as_completed(futures):
             try:
@@ -310,7 +331,6 @@ def process_osv_data(osv_data):
                         "cve": cve_id,
                         "package": pkg_name,
                         "version": pkg_version,
-                        "cwe": "N/A",
                         "score": score_str,
                     }
                 )
@@ -318,7 +338,7 @@ def process_osv_data(osv_data):
     return counts, detailed_findings
 
 
-def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_label):
+def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_label, verbose=False):
     """Renders formatted Rich table."""
     table = Table(
         title=f"--- Filtered Listing ({filter_label}) [{len(filtered_findings)} item(s)] ---",
@@ -332,11 +352,13 @@ def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_labe
     table.add_column("CVE / ID", width=22, no_wrap=True)
     table.add_column("PACKAGE", max_width=28, overflow="fold")
     table.add_column("CWE ID", width=10, no_wrap=True)
-    table.add_column("CWE NAME", max_width=22, overflow="ellipsis")
+    table.add_column("CWE NAME", max_width=30, overflow="ellipsis")
     table.add_column("CVSS", justify="right", width=6)
     table.add_column("EPSS", justify="right", width=8)
     table.add_column("KEV", justify="center", width=6)
-    table.add_column("DESCRIPTION", max_width=40, overflow="ellipsis")
+
+    if verbose:
+        table.add_column("DESCRIPTION", max_width=45, overflow="ellipsis")
 
     for item in filtered_findings:
         cve = item["cve"]
@@ -368,7 +390,7 @@ def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_labe
             Text("YES 🚨", style="bold red") if is_kev else Text("NO", style="dim green")
         )
 
-        table.add_row(
+        row = [
             item["severity"],
             cve,
             item["package"],
@@ -377,8 +399,12 @@ def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_labe
             cvss_display,
             epss_display,
             kev_display,
-            cwe_desc,
-        )
+        ]
+
+        if verbose:
+            row.append(cwe_desc)
+
+        table.add_row(*row)
 
     console.print(table)
 
@@ -391,6 +417,12 @@ def main():
         "container",
         nargs="?",
         help="Docker container name (e.g., metal3d/xmrig or aquasec/trivy)",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show detailed CWE descriptions in the output table",
     )
     parser.add_argument(
         "--critical",
@@ -507,7 +539,7 @@ def main():
                     epss_map = get_epss_scores(unique_cves)
                     cwe_map = get_cwe_map(unique_cves)
 
-                    # Batch pre-fetch CWE descriptions concurrently
+                    # Pre-fetch details for any CWEs not already in BUILTIN_CWE_DB
                     unique_cwes = list(set(cwe_map.values()))
                     get_cwe_details_batch(unique_cwes)
 
@@ -539,7 +571,12 @@ def main():
 
                     if filtered_findings:
                         render_rich_table(
-                            filtered_findings, cwe_map, epss_map, kev_set, filter_label
+                            filtered_findings,
+                            cwe_map,
+                            epss_map,
+                            kev_set,
+                            filter_label,
+                            verbose=args.verbose,
                         )
                     else:
                         print(f"No vulnerabilities found matching: {filter_label}")
