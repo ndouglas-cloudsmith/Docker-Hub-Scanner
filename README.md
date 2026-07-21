@@ -22,23 +22,19 @@ python3 DockerScanner.py
 |  | `vulhub/activemq:5.16.5` | **No** |  | **Yes** |
 |  | `021982/66_42_93_164` | Yes | https://opensourcemalware.com/container/021982%2F66_42_93_164 |  |
 
-You can run it directly with positional arguments or fall back to interactive prompt if omitted:
-
-Scan for a specific docker container called ```metal3d/xmrig```
+You can run the script directly with positional arguments or fall back to interactive prompt (if omitted). <br/>
+Scan for a specific docker container called ```metal3d/xmrig``` with a bunch of different flags listed below:
 ```
 python3 DockerScanner.py metal3d/xmrig
 ```
-
 Find only ```HIGH``` CVEs for a specific image:
 ```
 python3 DockerScanner.py vulhub/activemq:5.16.5 --high
 ```
-
 Find only ```CRITICAL``` CVEs for a specific image:
 ```
 python3 DockerScanner.py solr:8.11.0 --critical
 ```
-
 Find ```HIGH``` and ```CRITICAL``` CVEs for the same container image:
 ```
 python3 DockerScanner.py metal3d/xmrig --critical --high
@@ -47,7 +43,6 @@ Filter for Known Exploited Vuklnerabilities (**[KEV](https://www.cisa.gov/sites/
 ```
 python3 DockerScanner.py vulhub/activemq:5.16.5 --high --kev 
 ```
-
 Sort High severity findings by **[EPSS](https://www.first.org/epss/) descending**:
 ```
 python3 DockerScanner.py vulhub/activemq:5.16.5 --high --epss-dec
@@ -59,4 +54,8 @@ python3 DockerScanner.py vulhub/activemq:5.16.5 --high --kev --epss-desc
 Combine ```CVSS``` scores in descending order, where a **[CWE](https://cwe.mitre.org/data/pdfs.html)** *MUST* be present:
 ```
 DockerScanner.py vulhub/activemq:5.16.5 --critical --cvss-desc --cwe-true
+```
+Included a ```--verbose``` flag that describes the significance of the CWE:
+```
+python3 DockerScanner.py vulhub/activemq:5.16.5 --critical --high --cvss-desc --cwe-true --verbose
 ```
