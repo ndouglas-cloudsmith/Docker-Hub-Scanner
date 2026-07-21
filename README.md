@@ -22,6 +22,8 @@ python3 DockerScanner.py
 |  | `vulhub/activemq:5.16.5` | **No** |  | **Yes** |
 |  | `021982/66_42_93_164` | Yes | https://opensourcemalware.com/container/021982%2F66_42_93_164 |  |
 
+## Sample Commands
+
 You can run the script directly with positional arguments or fall back to interactive prompt (if omitted). <br/>
 Scan for a specific docker container called ```metal3d/xmrig``` with a bunch of different flags listed below:
 ```
