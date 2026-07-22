@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import os
 import re
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
@@ -25,6 +27,11 @@ adapter = HTTPAdapter(
 )
 SESSION.mount("https://", adapter)
 SESSION.mount("http://", adapter)
+
+# Local caching configuration
+CACHE_DIR = Path.home() / ".cache" / "cve_scanner"
+EXPLOITDB_CACHE_FILE = CACHE_DIR / "files_exploits.csv"
+CACHE_MAX_AGE_SECONDS = 86400  # 24 hours
 
 # Local offline database for common CWEs (Guarantees instant lookup & zero rate-limiting failures)
 BUILTIN_CWE_DB = {
@@ -205,6 +212,49 @@ def get_cisa_kev_set():
     return set()
 
 
+def get_exploitdb_map():
+    """Returns a dict mapping CVE IDs to lists of Exploit-DB IDs (EDB-IDs), using a local cache."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    use_cache = False
+    if EXPLOITDB_CACHE_FILE.exists():
+        file_age = time.time() - EXPLOITDB_CACHE_FILE.stat().st_mtime
+        if file_age < CACHE_MAX_AGE_SECONDS:
+            use_cache = True
+
+    # Fetch remote if cache missing or expired
+    if not use_cache:
+        url = "https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv"
+        try:
+            resp = SESSION.get(url, timeout=5)
+            if resp.status_code == 200:
+                with open(EXPLOITDB_CACHE_FILE, "w", encoding="utf-8") as f:
+                    f.write(resp.text)
+        except Exception:
+            if not EXPLOITDB_CACHE_FILE.exists():
+                return {}
+
+    # Parse mappings from local CSV
+    exploit_map = {}
+    try:
+        with open(EXPLOITDB_CACHE_FILE, "r", encoding="utf-8", errors="ignore") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                edb_id = row.get("id", "").strip()
+                codes = row.get("codes", "")
+                if edb_id and codes:
+                    cves = re.findall(r"CVE-\d{4}-\d{4,7}", codes, flags=re.IGNORECASE)
+                    for cve in cves:
+                        cve_upper = cve.upper()
+                        if cve_upper not in exploit_map:
+                            exploit_map[cve_upper] = []
+                        if edb_id not in exploit_map[cve_upper]:
+                            exploit_map[cve_upper].append(edb_id)
+        return exploit_map
+    except Exception:
+        return {}
+
+
 def get_epss_scores(cve_list):
     """Query FIRST.org API to get EPSS scores for a list of CVEs."""
     valid_cves = list({cve for cve in cve_list if cve.startswith("CVE-")})
@@ -338,8 +388,8 @@ def process_osv_data(osv_data):
     return counts, detailed_findings
 
 
-def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_label, verbose=False):
-    """Renders formatted Rich table."""
+def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, exploitdb_map, filter_label, verbose=False):
+    """Renders formatted Rich table with full visible ExploitDB URLs."""
     table = Table(
         title=f"--- Filtered Listing ({filter_label}) [{len(filtered_findings)} item(s)] ---",
         title_style="bold yellow",
@@ -350,12 +400,13 @@ def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_labe
 
     table.add_column("SEVERITY", style="bold red", width=10, no_wrap=True)
     table.add_column("CVE / ID", width=22, no_wrap=True)
-    table.add_column("PACKAGE", max_width=28, overflow="fold")
+    table.add_column("PACKAGE", max_width=24, overflow="fold")
     table.add_column("CWE ID", width=10, no_wrap=True)
-    table.add_column("CWE NAME", max_width=30, overflow="ellipsis")
+    table.add_column("CWE NAME", max_width=28, overflow="ellipsis")
     table.add_column("CVSS", justify="right", width=6)
     table.add_column("EPSS", justify="right", width=8)
     table.add_column("KEV", justify="center", width=6)
+    table.add_column("EXPLOITDB URL", justify="left", max_width=45, overflow="fold")
 
     if verbose:
         table.add_column("DESCRIPTION", max_width=45, overflow="ellipsis")
@@ -390,6 +441,21 @@ def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_labe
             Text("YES 🚨", style="bold red") if is_kev else Text("NO", style="dim green")
         )
 
+        # ExploitDB Formatting - Full visible URLs
+        edb_ids = exploitdb_map.get(cve, [])
+        if edb_ids:
+            exploitdb_display = Text()
+            for idx, edb_id in enumerate(edb_ids[:2]):
+                if idx > 0:
+                    exploitdb_display.append("\n")
+                full_url = f"https://www.exploit-db.com/exploits/{edb_id}"
+                exploitdb_display.append(full_url, style=f"bold red underline link {full_url}")
+
+            if len(edb_ids) > 2:
+                exploitdb_display.append(f"\n(+{len(edb_ids) - 2} more)", style="bold red")
+        else:
+            exploitdb_display = Text("N/A", style="dim")
+
         row = [
             item["severity"],
             cve,
@@ -399,6 +465,7 @@ def render_rich_table(filtered_findings, cwe_map, epss_map, kev_set, filter_labe
             cvss_display,
             epss_display,
             kev_display,
+            exploitdb_display,
         ]
 
         if verbose:
@@ -436,6 +503,11 @@ def main():
         "--kev",
         action="store_true",
         help="Filter findings down to only Known Exploited Vulnerabilities (CISA KEV)",
+    )
+    parser.add_argument(
+        "--exploitdb",
+        action="store_true",
+        help="Filter findings down to only vulnerabilities present in Exploit-DB",
     )
     parser.add_argument(
         "--cwe-true",
@@ -526,15 +598,20 @@ def main():
                     filtered_findings = findings
                     filter_label = "All Severities"
 
-                print(f"\nFetching CISA KEV threat intelligence...")
+                print("\nFetching CISA KEV and ExploitDB threat intelligence...")
                 kev_set = get_cisa_kev_set()
+                exploitdb_map = get_exploitdb_map()
 
                 if args.kev:
                     filtered_findings = [f for f in filtered_findings if f["cve"] in kev_set]
                     filter_label += " | KEV Only 🚨"
 
+                if args.exploitdb:
+                    filtered_findings = [f for f in filtered_findings if f["cve"] in exploitdb_map]
+                    filter_label += " | ExploitDB Only ⚔️"
+
                 if filtered_findings:
-                    print(f"Fetching EPSS and CWE threat intelligence (Parallel)...")
+                    print("Fetching EPSS and CWE threat intelligence (Parallel)...")
                     unique_cves = list({item["cve"] for item in filtered_findings})
                     epss_map = get_epss_scores(unique_cves)
                     cwe_map = get_cwe_map(unique_cves)
@@ -575,6 +652,7 @@ def main():
                             cwe_map,
                             epss_map,
                             kev_set,
+                            exploitdb_map,
                             filter_label,
                             verbose=args.verbose,
                         )
