@@ -61,3 +61,7 @@ Included a ```--verbose``` flag that describes the significance of the CWE:
 ```
 python3 DockerScanner.py vulhub/activemq:5.16.5 --critical --high --cvss-desc --cwe-true --verbose
 ```
+Included an ```--exploitdb``` flag that lets the user know if an Known Exploited Vulnerability has an associated, public-facing exploit script in the **[ExploitDB](https://www.exploit-db.com/exploits/52479)** database.
+```
+python3 DockerScanner.py vulhub/activemq:5.16.5 --critical --high --epss-desc --kev --exploitdb
+```
