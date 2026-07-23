@@ -62,3 +62,7 @@ Included an ```--exploitdb``` flag that lets the user know if an Known Exploited
 ```
 python3 DockerScanner.py vulhub/activemq:5.16.5 --critical --high --epss-desc --kev --exploitdb
 ```
+Example of known exploited that DO NOT show up in the ExploitDB and vice versa
+```
+python3 DockerScanner.py atlassian/confluence-server:7.13.6 --critical --high --epss-desc
+```
