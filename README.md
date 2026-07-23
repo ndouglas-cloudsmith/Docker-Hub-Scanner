@@ -62,7 +62,11 @@ Included an ```--exploitdb``` flag that lets the user know if an Known Exploited
 ```
 python3 DockerScanner.py vulhub/activemq:5.16.5 --critical --high --epss-desc --kev --exploitdb
 ```
-Example of known exploited that DO NOT show up in the ExploitDB and vice versa
+Example of known exploited that **DO NOT** show up in the ExploitDB and vice versa
 ```
 python3 DockerScanner.py atlassian/confluence-server:7.13.6 --critical --high --epss-desc
+```
+Exploited vulnerability with less than 30% EPSS score (```Log4J``` image):
+```
+python3 DockerScanner.py solr:8.11.0 --critical --high --epss-desc
 ```
