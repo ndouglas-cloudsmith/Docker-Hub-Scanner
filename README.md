@@ -8,19 +8,19 @@ wget https://raw.githubusercontent.com/ndouglas-cloudsmith/Docker-Hub-Scanner/re
 python3 DockerScanner.py
 ```
 
-| Github Repos | Docker Hub | Malicious? | OSM Record | Exploited? |
-| --- | --- | --- | --- | --- |
-|  | `d0whc3r/kali-ssh` | Yes | https://opensourcemalware.com/container/d0whc3r%2Fkali-ssh |  |
-|  | `atlassian/confluence-server:7.13.6` | **No** |  | **Yes** |
-|  | `metal3d/xmrig` | Yes | https://opensourcemalware.com/container/metal3d%2Fxmrig |  |
-|  | `solr:8.11.0` | **No** |  | **Yes** |
-| github.com/wearenotpoliticallycorrect/docker-image |  | Yes | https://opensourcemalware.com/container/github.com%2Fwearenotpoliticallycorrect%2Fdocker-image |  |
-| github.com/dvkunion/test_ci |  | Yes | https://opensourcemalware.com/container/github.com%2Fdvkunion%2Ftest_ci |  |
-| github.com/ckmaenn/shello-2105 |  | Yes | https://opensourcemalware.com/container/github.com%2Fckmaenn%2Fshello-2105 |  |
-|  | `cryptoandcoffee/nvidia-docker-meta-miner` | Yes | https://opensourcemalware.com/container/cryptoandcoffee%2Fnvidia-docker-meta-miner |  |
-|  | `osekugatty/picture124` | Yes | https://opensourcemalware.com/container/osekugatty%2Fpicture124 |  |
-|  | `vulhub/activemq:5.16.5` | **No** |  | **Yes** |
-|  | `021982/66_42_93_164` | Yes | https://opensourcemalware.com/container/021982%2F66_42_93_164 |  |
+| Docker Images | Malicious? | OSM Record | Exploited? |
+| --- | --- | --- | --- |
+| `d0whc3r/kali-ssh` | Yes | https://opensourcemalware.com/container/d0whc3r%2Fkali-ssh |  |
+| `atlassian/confluence-server:7.13.6` | **No** |  | **Yes** |
+| `metal3d/xmrig` | Yes | https://opensourcemalware.com/container/metal3d%2Fxmrig |  |
+| `solr:8.11.0` | **No** |  | **Yes** |
+| github.com/wearenotpoliticallycorrect/docker-image | Yes | https://opensourcemalware.com/container/github.com%2Fwearenotpoliticallycorrect%2Fdocker-image |  |
+| github.com/dvkunion/test_ci | github.com/dvkunion/test_ci | Yes | https://opensourcemalware.com/container/github.com%2Fdvkunion%2Ftest_ci |  |
+| github.com/ckmaenn/shello-2105 | github.com/ckmaenn/shello-2105 | Yes | https://opensourcemalware.com/container/github.com%2Fckmaenn%2Fshello-2105 |  |
+| `cryptoandcoffee/nvidia-docker-meta-miner` | Yes | https://opensourcemalware.com/container/cryptoandcoffee%2Fnvidia-docker-meta-miner |  |
+| `osekugatty/picture124` | Yes | https://opensourcemalware.com/container/osekugatty%2Fpicture124 |  |
+| `vulhub/activemq:5.16.5` | **No** |  | **Yes** |
+| `021982/66_42_93_164` | Yes | https://opensourcemalware.com/container/021982%2F66_42_93_164 |  |
 
 ## Sample Commands
 
