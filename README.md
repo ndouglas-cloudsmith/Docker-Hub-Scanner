@@ -26,6 +26,10 @@ Scan for a specific docker container called ```metal3d/xmrig``` with a bunch of 
 ```
 python3 DockerScanner.py metal3d/xmrig
 ```
+Image that contains ```malicious``` code and ```critical``` vulnerabilities:
+```
+DockerScanner.py osekugatty/picture124 --cvss-desc
+```
 Find only ```HIGH``` CVEs for a specific image:
 ```
 python3 DockerScanner.py vulhub/activemq:5.16.5 --high
